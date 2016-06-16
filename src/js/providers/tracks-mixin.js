@@ -129,15 +129,18 @@ define(['../utils/underscore',
 
         // Set the provider's index to the model's index, then show the selected track if it exists
         _currentTextTrackIndex = index - 1;
-        if (_textTracks[_currentTextTrackIndex]) {
-            _textTracks[_currentTextTrackIndex].mode = 'showing';
-        }
 
-        // Update the model index if change did not originate from controlbar or api
-        this.trigger('subtitlesTrackChanged', {
-            currentTrack: _currentTextTrackIndex + 1,
-            tracks: _textTracks
-        });
+        if(_renderNatively) {
+            if (_textTracks[_currentTextTrackIndex]) {
+                _textTracks[_currentTextTrackIndex].mode = 'showing';
+            }
+
+            // Update the model index if change did not originate from controlbar or api
+            this.trigger('subtitlesTrackChanged', {
+                currentTrack: _currentTextTrackIndex + 1,
+                tracks: _textTracks
+            });
+        }
     }
 
     function getSubtitlesTrack() {
