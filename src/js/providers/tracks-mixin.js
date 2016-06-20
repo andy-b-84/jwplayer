@@ -20,13 +20,14 @@ define(['../utils/underscore',
         setTextTracks: setTextTracks,
         setupSideloadedTracks: setupSideloadedTracks,
         setSubtitlesTrack: setSubtitlesTrack,
-        textTrackChangeHandler: textTrackChangeHandler
-        //loadPolyfill: loadPolyfill
+        textTrackChangeHandler: textTrackChangeHandler,
+        addCuesToTrack: addCuesToTrack
     };
 
     var _textTracks = null, // subtitles and captions tracks
-        _textTracksCache = null,
+        _tracksById = null,
         _cuesCache = null,
+        _metaCuesByTextTime = null,
         _currentTextTrackIndex = -1, // captionsIndex - 1 (accounts for Off = 0 in model)
         _embeddedTrackCount = 0,
         _unknownCount = 0,
@@ -51,13 +52,13 @@ define(['../utils/underscore',
 
             for (i; i < len; i++) {
                 var track = tracks[i];
-                if (_textTracksCache[track.id]) {
+                if (_tracksById[track.id]) {
                     continue;
                 }
                 if (track.kind === 'metadata') {
                     track.oncuechange = _cueChangeHandler.bind(this);
                     track.mode = 'showing';
-                    _textTracksCache[track.kind] = track;
+                    _tracksById[track.kind] = track;
 
                     if (track.label === 'ID3 Metadata') {
                         _embeddedTrackCount++;
@@ -84,13 +85,18 @@ define(['../utils/underscore',
                     }
                     _addTrackToList(track);
 
-                    if (track.embedded) {
+                    if (track.embedded || track.groupid === 'subs') {
                         _embeddedTrackCount++;
                     }
+                } else if (track.name) {
+                    // subtitles track coming from flash
+                    _addTrackToList(_createTrack(track));
                 }
             }
         }
-        this.addTracksListener(tracks, 'change', textTrackChangeHandler);
+        if(this.video) {
+            this.addTracksListener(tracks, 'change', textTrackChangeHandler);
+        }
         if (_textTracks && _textTracks.length) {
             this.trigger('subtitlesTracks', {tracks: _textTracks});
         }
@@ -158,6 +164,35 @@ define(['../utils/underscore',
         return _currentTextTrackIndex;
     }
 
+    function addCuesToTrack(data) {
+        // convert cues coming from the flash provider into VTTCues
+        var track = _tracksById[data.name];
+        if (!track) {
+            return;
+        }
+
+        track.source = data.source;
+        var cues = data.captions || [],
+            cuesToConvert = [];
+        var sort = false;
+        for (var i=0; i<cues.length; i++) {
+            var cue = cues[i];
+            var cueId = data.name +'_'+ cue.begin +'_'+ cue.end;
+            if (!_metaCuesByTextTime[cueId]) {
+                _metaCuesByTextTime[cueId] = cue;
+                cuesToConvert.push(cue);
+                sort = true;
+            }
+        }
+        if (sort) {
+            cuesToConvert.sort(function(a, b) {
+                return a.begin - b.begin;
+            });
+        }
+        var vttCues = _convertToVTTCues(cuesToConvert);
+        Array.prototype.push.apply(track.data, vttCues);
+    }
+
     function addTracksListener (tracks, eventType, handler) {
         handler = handler.bind(this);
 
@@ -179,25 +214,9 @@ define(['../utils/underscore',
         }
     }
 
-    //function loadPolyfill (resolve) {
-        //asyncLoad('../', callback) {
-        //callback();
-        //
-
-
-        //if (!_renderNatively && !window.WebVTT) {
-        //    require.ensure(['polyfills/vtt'], function (require) {
-        //        require('polyfills/vtt');
-        //        resolve();
-        //    }, 'polyfills.vtt');
-        //} else {
-        //    resolve();
-        //}
-    //}
-
     function clearTracks() {
         _textTracks = null;
-        _textTracksCache = null;
+        _tracksById = null;
         _cuesCache = null;
         _embeddedTrackCount = 0;
     }
@@ -275,14 +294,16 @@ define(['../utils/underscore',
         });
         _initTextTracks();
         _.each(nonVTTTracks, function (track, index) {
-           _textTracksCache[index + track] = track;
+           _tracksById[index + track] = track;
         });
         _textTracks = nonVTTTracks;
     }
 
     function _initTextTracks() {
         _textTracks = [];
-        _textTracksCache = {};
+        _tracksById = {};
+        _metaCuesByTextTime = {};
+
     }
 
     function _addTracks(tracks) {
@@ -360,7 +381,7 @@ define(['../utils/underscore',
 
     function _addTrackToList(track) {
             _textTracks.push(track);
-            _textTracksCache[track.id] = track;
+            _tracksById[track.id] = track;
     }
 
     function _parseTrack(itemTrack, track) {
@@ -415,7 +436,7 @@ define(['../utils/underscore',
 
     function _addCuesToTrack(track, vttCues) {
         if(_renderNatively) {
-            var textTrack = _textTracksCache[track.id];
+            var textTrack = _tracksById[track.id];
             if (!textTrack) {
                 // track not yet available on the video tag
                 if(!_cuesCache) {
@@ -451,6 +472,8 @@ define(['../utils/underscore',
         if(!track.id) {
             track.id = itemTrack.name || itemTrack.file || ('cc' + _textTracks.length);
         }
+
+        track.label = track.label || track.name || track.language;
 
         if (!track.label) {
             track.label = 'Unknown CC'; // TODO: avoid name collision with embedded Unknown CC track
