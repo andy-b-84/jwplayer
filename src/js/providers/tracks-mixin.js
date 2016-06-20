@@ -20,21 +20,21 @@ define(['../utils/underscore',
         setTextTracks: setTextTracks,
         setupSideloadedTracks: setupSideloadedTracks,
         setSubtitlesTrack: setSubtitlesTrack,
-        textTrackChangeHandler: textTrackChangeHandler,
-        loadPolyfill: loadPolyfill
+        textTrackChangeHandler: textTrackChangeHandler
+        //loadPolyfill: loadPolyfill
     };
 
     var _textTracks = null, // subtitles and captions tracks
         _textTracksCache = null,
+        _cuesCache = null,
         _currentTextTrackIndex = -1, // captionsIndex - 1 (accounts for Off = 0 in model)
         _embeddedTrackCount = 0,
         _unknownCount = 0,
         _corsAllowed = true,
         _renderNatively = false;
 
-
-    function setTextTracks() {
-        var tracks = this.video.textTracks;
+    function setTextTracks(tracks) {
+        //var tracks = this.video.textTracks;
         _currentTextTrackIndex = -1;
         if (!tracks) {
             return;
@@ -51,13 +51,13 @@ define(['../utils/underscore',
 
             for (i; i < len; i++) {
                 var track = tracks[i];
-                if (_textTracksCache[i + track.id]) {
+                if (_textTracksCache[track.id]) {
                     continue;
                 }
                 if (track.kind === 'metadata') {
                     track.oncuechange = _cueChangeHandler.bind(this);
                     track.mode = 'showing';
-                    _textTracksCache[i + track.kind] = track;
+                    _textTracksCache[track.kind] = track;
 
                     if (track.label === 'ID3 Metadata') {
                         _embeddedTrackCount++;
@@ -65,7 +65,8 @@ define(['../utils/underscore',
                 }
                 else if (track.kind === 'subtitles' || track.kind === 'captions') {
                     // By setting the track mode to 'hidden', we can determine if the 608 track has cues
-                    var mode = track.mode;
+                    var mode = track.mode,
+                        cue;
                     track.mode = 'hidden';
                     if (!track.cues.length && this.getName().name === 'caterpillar' && track.label === 'Unknown CC') {
                         // There's no method to remove tracks added via: video.addTextTrack in caterpillar.
@@ -73,6 +74,14 @@ define(['../utils/underscore',
                         continue;
                     }
                     track.mode = mode;
+                    if(_cuesCache && _cuesCache[track.id]) {
+                        var cues = _cuesCache[track.id];
+                        while((cue = cues.pop())) {
+                            track.addCue(cue);
+                        }
+                        track.mode = mode;
+                        delete _cuesCache[track.id];
+                    }
                     _addTrackToList(track);
 
                     if (track.embedded) {
@@ -89,14 +98,16 @@ define(['../utils/underscore',
 
     function setupSideloadedTracks(tracks) {
         _renderNatively = _nativeRenderingSupported(this.getName().name);
-        if (this._isSDK || !tracks) {
+        if (this.isSDK || !tracks) {
             return;
         }
         // Add tracks if we're starting playback or resuming after a midroll
-        if (!_tracksAlreadySideloaded(tracks)) {
-            disableTextTrack();
-            dom.emptyElement(this.video);
-            _clearSideloadedTextTracks();
+        if (!_tracksAlreadySideloaded.call(this, tracks)) {
+            if(_renderNatively) {
+                disableTextTrack();
+                dom.emptyElement(this.video);
+                _clearSideloadedTextTracks();
+            }
             this.itemTracks = tracks;
             _addTracks.call(this, tracks);
         }
@@ -168,7 +179,7 @@ define(['../utils/underscore',
         }
     }
 
-    function loadPolyfill (resolve) {
+    //function loadPolyfill (resolve) {
         //asyncLoad('../', callback) {
         //callback();
         //
@@ -182,11 +193,12 @@ define(['../utils/underscore',
         //} else {
         //    resolve();
         //}
-    }
+    //}
 
     function clearTracks() {
         _textTracks = null;
         _textTracksCache = null;
+        _cuesCache = null;
         _embeddedTrackCount = 0;
     }
 
@@ -198,20 +210,19 @@ define(['../utils/underscore',
 
     function textTrackChangeHandler () {
 
-        if (!_textTracks) {
-            //if tracks/cues are first added after the loadeddata event...
-            this.setTextTracks();
-        } else {
-            // if a caption/subtitle track is showing, find its index
-            var _selectedTextTrackIndex = -1, i = 0;
-            for (i; i < _textTracks.length; i++) {
-                if (_textTracks[i].mode === 'showing') {
-                    _selectedTextTrackIndex = i;
-                    break;
-                }
-            }
-            this.setSubtitlesTrack(_selectedTextTrackIndex + 1);
+        if (!_textTracks || this.video.textTracks.length > _textTracks.length) {
+            //if tracks are added to the video tag...
+            this.setTextTracks(this.video.textTracks);
         }
+        // if a caption/subtitle track is showing, find its index
+        var _selectedTextTrackIndex = -1, i = 0;
+        for (i; i < _textTracks.length; i++) {
+            if (_textTracks[i].mode === 'showing') {
+                _selectedTextTrackIndex = i;
+                break;
+            }
+        }
+        this.setSubtitlesTrack(_selectedTextTrackIndex + 1);
     }
 
     function _cueChangeHandler(e) {
@@ -293,6 +304,10 @@ define(['../utils/underscore',
             var itemTrack = tracks[i];
             var track = _createTrack(itemTrack, this.video);
 
+            if(_renderNatively) {
+
+            }
+
             if ((/\.(?:web)?vtt(?:\?.*)?$/i).test(itemTrack.file)) {
                 // VTT track
                 // only add valid kinds https://developer.mozilla.org/en-US/docs/Web/HTML/Element/track
@@ -300,27 +315,40 @@ define(['../utils/underscore',
                     continue;
                 }
 
-                if (!crossoriginAnonymous) {
-                    // CORS applies to track loading and requires the crossorigin attribute
-                    if (!this.video.hasAttribute('crossorigin') && utils.crossdomain(itemTrack.file)) {
-                        this.video.setAttribute('crossorigin', 'anonymous');
-                        crossoriginAnonymous = true;
+                if (_renderNatively) {
+                    if (!crossoriginAnonymous) {
+                        // CORS applies to track loading and requires the crossorigin attribute
+                        if (!this.video.hasAttribute('crossorigin') && utils.crossdomain(itemTrack.file)) {
+                            this.video.setAttribute('crossorigin', 'anonymous');
+                            crossoriginAnonymous = true;
+                        }
                     }
-                }
 
-                if(_renderNatively && _corsAllowed) {
-                    // TODO: Check for CORS issues and instead, load the file via parsing
-                    track.src = itemTrack.file;
-                    // add VTT track directly to the video element
-                    this.video.appendChild(track);
+                    if(_corsAllowed) {
+                        // TODO: Check for CORS issues and instead, parse the file
+                        track.src = itemTrack.file;
+                        // add VTT track directly to the video element
+                        this.video.appendChild(track);
+                    }
                 } else {
                     // parse track into cues
                     _addTrackToList(track);
                     _parseTrack(itemTrack, track);
                 }
             } else {
-                // Non-VTT track. Add track now and parse the cues async
+
                 if(_renderNatively) {
+                    // adding an empty track to the video tag allows us to append cues to a
+                    // TextTrack object later when the trackchange event fires.
+                    if (!crossoriginAnonymous) {
+                        // CORS applies to track loading and requires the crossorigin attribute
+                        if (!this.video.hasAttribute('crossorigin') && utils.crossdomain(itemTrack.file)) {
+                            this.video.setAttribute('crossorigin', 'anonymous');
+                            crossoriginAnonymous = true;
+                        }
+                    }
+
+                    track.src = 'https://playertest.longtailvideo.com/assets/os/captions/empty.vtt';
                     this.video.appendChild(track);
                 } else {
                     _addTrackToList(track);
@@ -331,8 +359,8 @@ define(['../utils/underscore',
     }
 
     function _addTrackToList(track) {
-        _textTracks.push(track);
-        _textTracksCache[track.id] = track;
+            _textTracks.push(track);
+            _textTracksCache[track.id] = track;
     }
 
     function _parseTrack(itemTrack, track) {
@@ -387,7 +415,20 @@ define(['../utils/underscore',
 
     function _addCuesToTrack(track, vttCues) {
         if(_renderNatively) {
-            track.addCues(vttCues);
+            var textTrack = _textTracksCache[track.id];
+            if (!textTrack) {
+                // track not yet available on the video tag
+                if(!_cuesCache) {
+                    _cuesCache = {};
+                }
+                _cuesCache[track.id] = vttCues;
+                return;
+            }
+            var cue;
+
+            while((cue = vttCues.pop())) {
+                textTrack.addCue(cue);
+            }
         } else {
             track.data = vttCues;
         }
@@ -408,11 +449,11 @@ define(['../utils/underscore',
 
         track.id = itemTrack.default || itemTrack.defaulttrack ? 'default' : '';
         if(!track.id) {
-            track.id = track.name || track.file || ('cc' + _textTracks.length);
+            track.id = itemTrack.name || itemTrack.file || ('cc' + _textTracks.length);
         }
 
         if (!track.label) {
-            track.label = 'Unknown CC'; // TODO: avoid name collission with embedded Unknown CC track
+            track.label = 'Unknown CC'; // TODO: avoid name collision with embedded Unknown CC track
             _unknownCount++;
             if (_unknownCount > 1) {
                 track.label += ' [' + _unknownCount + ']';
@@ -458,7 +499,7 @@ define(['../utils/underscore',
     }
 
     function _nativeRenderingSupported(providerName) {
-        return providerName !== 'flash' && utils.isChrome() || utils.isIOS() || utils.isSafari();
+        return providerName.indexOf('flash') === -1 && utils.isChrome() || utils.isIOS() || utils.isSafari();
     }
 
     return Tracks;
